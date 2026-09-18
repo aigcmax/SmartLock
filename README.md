@@ -33,11 +33,9 @@
 
 ## 界面预览
 
-| 启动页 | 扫描设备 | 设置密码 | 首页 |
-|:---:|:---:|:---:|:---:|
-| ![Splash](docs/images/app-splash.png) | ![Scan](docs/images/app-scan.png) | ![Password](docs/images/app-password.png) | ![Home](docs/images/app-home.png) |
-
-> 截图占位，实际运行时请替换 `docs/images/` 下的图片。
+|                   启动页                   |                扫描设备                 |                 上锁                  |                   解锁                    |
+|:---------------------------------------:|:-----------------------------------:|:-----------------------------------:|:---------------------------------------:|
+| ![Splash](./docs/images/app-splash.png) | ![Scan](./docs/images/app-scan.png) | ![Lock](./docs/images/app-lock.png) | ![Unlock](./docs/images/app-unlock.png) |
 
 ---
 
