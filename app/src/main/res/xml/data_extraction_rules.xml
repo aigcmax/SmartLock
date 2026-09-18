@@ -16,4 +16,10 @@
         <exclude .../>
     </device-transfer>
     -->
+    <cloud-backup>
+        <exclude domain="database" path="smart_lock.db" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="smart_lock.db" />
+    </device-transfer>
 </data-extraction-rules>
