@@ -33,9 +33,9 @@
 
 ## 界面预览
 
-|                   启动页                   |                扫描设备                 |                 上锁                  |                   解锁                    |
-|:---------------------------------------:|:-----------------------------------:|:-----------------------------------:|:---------------------------------------:|
-| ![Splash](./docs/images/app-splash.png) | ![Scan](./docs/images/app-scan.png) | ![Lock](./docs/images/app-lock.png) | ![Unlock](./docs/images/app-unlock.png) |
+|                                          启动页                                           |                                        扫描设备                                        |                 上锁                  |                                           解锁                                           |
+|:--------------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------:|:-----------------------------------:|:--------------------------------------------------------------------------------------:|
+| ![Splash](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-splash.png) | ![Scan](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-scan.png) | ![Lock](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-lock.png) | ![Unlock](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-unlock.png) |
 
 ---
 
