@@ -3,8 +3,8 @@
 > 一款基于蓝牙 BLE 的智能门锁 Android 应用，让忘带钥匙的上班族也能轻松开门。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://developer.android.com)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-blue.svg)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Compose-BOM%202024.12.01-brightgreen.svg)](https://developer.android.com/jetpack/compose)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.2.10-blue.svg)](https://kotlinlang.org)
+[![Compose](https://img.shields.io/badge/Compose-BOM%202026.02.01-brightgreen.svg)](https://developer.android.com/jetpack/compose)
 [![minSdk](https://img.shields.io/badge/minSdk-26-orange.svg)](https://developer.android.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -33,9 +33,9 @@
 
 ## 界面预览
 
-|                                          启动页                                           |                                        扫描设备                                        |                 上锁                  |                                           解锁                                           |
-|:--------------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------:|:-----------------------------------:|:--------------------------------------------------------------------------------------:|
-| ![Splash](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-splash.png) | ![Scan](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-scan.png) | ![Lock](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-lock.png) | ![Unlock](https://github.com/aigcmax/SmartLock/blob/master/docs/images/app-unlock.png) |
+|                   启动页                   |                扫描设备                 |                 上锁                  |                   解锁                    |
+|:---------------------------------------:|:-----------------------------------:|:-----------------------------------:|:---------------------------------------:|
+| ![Splash](./docs/images/app-splash.png) | ![Scan](./docs/images/app-scan.png) | ![Lock](./docs/images/app-lock.png) | ![Unlock](./docs/images/app-unlock.png) |
 
 ---
 
