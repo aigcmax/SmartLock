@@ -34,6 +34,12 @@ object BleUartConfig {
     const val WRITE_TIMEOUT_MS = 3_000L
     const val COMMAND_TIMEOUT_MS = 5_000L
 
+    // 新增：心跳与连接参数
+    const val KEEP_ALIVE_INTERVAL_MS = 15_000L  // ← 心跳间隔
+    const val RECONNECT_DELAY_MS = 500L          // ← 断线后延迟
+    const val CLOSE_DELAY_MS = 500L              // ← disconnect 后延迟 close
+    const val TARGET_MTU = 247                   // ← 期望的 MTU
+
     // ============ 分包 ============
     /** 默认 BLE MTU 23 时，可写 payload = 20 字节。此处保守使用 20。 */
     const val DEFAULT_CHUNK_SIZE = 20

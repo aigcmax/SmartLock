@@ -18,6 +18,8 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.smartlock.ble.BleManager
@@ -39,18 +41,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
+import kotlin.time.Duration.Companion.milliseconds
 
-/**
- * 基于 Nordic UART Service 的 BLE 实现，兼容 ESP32-C3 等使用 NUS 的硬件。
- *
- * 扫描策略：
- *   - 不使用 ScanFilter，扫描所有 BLE 设备
- *   - 在 onScanResult 里按名称前缀筛选（ESP32 固件广播 UUID 的行为不一致，
- *     部分固件不广播 NUS UUID，所以不用 UUID 过滤更稳）
- *   - 连接后仍然使用 NUS Service UUID 查找 RX/TX 特征
- *
- * 使用方式：在 AppContainer 中把 FakeBleManager 换成本类即可，其他代码无需修改。
- */
 @SuppressLint("MissingPermission")
 class RealBleManager(
     private val context: Context
@@ -58,6 +50,7 @@ class RealBleManager(
 
     private val tag = "RealBleManager"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _connectionState = MutableStateFlow<BleConnectionState>(
         BleConnectionState.NotPaired
@@ -72,38 +65,29 @@ class RealBleManager(
     private val _isScanning = MutableStateFlow(false)
     override val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    // ---------- GATT 相关 ----------
     private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
     private var txChar: BluetoothGattCharacteristic? = null
 
-    // ---------- 各阶段挂起点 ----------
     private var connectDeferred: CompletableDeferred<Boolean>? = null
     private var discoverDeferred: CompletableDeferred<Boolean>? = null
     private var writeDeferred: CompletableDeferred<Boolean>? = null
     private var notifyDeferred: CompletableDeferred<Boolean>? = null
+    private var mtuDeferred: CompletableDeferred<Int>? = null
 
-    // ---------- 接收缓冲区 ----------
     private val receiveBuffer = ByteArrayOutputStream()
     private var commandDeferred: CompletableDeferred<BleUartProtocol.Parsed>? = null
 
-    // ---------- 串行化 GATT 操作 ----------
     private val gattMutex = Mutex()
-
     private var scanJob: Job? = null
+    private var keepAliveJob: Job? = null
+    private var closingGatt = false
 
-    /**
-     * 设备名称前缀白名单。
-     * - 上传前用 nRF Connect 确认你的 ESP32 广播名，把前缀填进来
-     * - 匹配规则：设备名以其中任意一项开头（忽略大小写）
-     * - 若想调试时显示所有设备，把 [SHOW_ALL_DEVICES] 置为 true
-     */
     private val deviceNamePrefixes = listOf(
         "ESP32-C3-Lock",
         "SmartLock",
         "ESP32",
-        "NUS",
-        "wyl"
+        "NUS"
     )
     private val SHOW_ALL_DEVICES = false
 
@@ -144,11 +128,9 @@ class RealBleManager(
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device ?: return
-            // 部分设备第一次广播不带名字（ScanRecord 里才有），尝试两处取
             val name = runCatching { device.name }.getOrNull()
                 ?: result.scanRecord?.deviceName
                 ?: return
-
             if (!isDeviceNameMatched(name)) return
 
             val item = ScannedDevice(
@@ -183,7 +165,6 @@ class RealBleManager(
         _scannedDevices.value = emptyList()
         _isScanning.value = true
 
-        // ✅ 不再使用 ScanFilter，扫描所有设备；用名称在 onScanResult 里筛选
         val filters: List<ScanFilter> = emptyList()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -212,7 +193,7 @@ class RealBleManager(
     }
 
     // ============================================================
-    // 连接：建链 → 发现服务 → 找 NUS 特征 → 订阅 TX
+    // 连接
     // ============================================================
     override suspend fun connect(address: String): Boolean {
         if (!hasBlePermission()) {
@@ -223,8 +204,20 @@ class RealBleManager(
             _connectionState.value = BleConnectionState.BluetoothOff
             return false
         }
+
+        // ⚠️ 关键：先停扫描、再等待上一次 close 完成
         stopScan()
+        stopKeepAlive()
+
+        // 如果上一个 gatt 还没关闭完成，等待
+        var waited = 0L
+        while (closingGatt && waited < 2000) {
+            delay(50)
+            waited += 50
+        }
+
         closeGatt()
+        delay(BleUartConfig.RECONNECT_DELAY_MS)  // ⚠️ 增加延迟，让栈清理
 
         val device: BluetoothDevice = runCatching {
             adapter()?.getRemoteDevice(address)
@@ -234,17 +227,12 @@ class RealBleManager(
         connectDeferred = CompletableDeferred()
 
         gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(
-                context,
-                false,
-                gattCallback,
-                BluetoothDevice.TRANSPORT_LE
-            )
+            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
             device.connectGatt(context, false, gattCallback)
         }
 
-        val connected = withTimeoutOrNull(BleUartConfig.CONNECT_TIMEOUT_MS) {
+        val connected = withTimeoutOrNull(BleUartConfig.CONNECT_TIMEOUT_MS.milliseconds) {
             connectDeferred?.await() ?: false
         } ?: false
 
@@ -254,6 +242,23 @@ class RealBleManager(
             return false
         }
 
+        // ⚠️ 连接成功后立即请求高优先级
+        runCatching {
+            gatt?.requestConnectionPriority(
+                BluetoothGatt.CONNECTION_PRIORITY_HIGH
+            )
+            Log.d(tag, "requestConnectionPriority HIGH")
+        }
+
+        // ⚠️ 请求 MTU
+        runCatching {
+            mtuDeferred = CompletableDeferred()
+            gatt?.requestMtu(BleUartConfig.TARGET_MTU)
+            val mtu = withTimeoutOrNull(2000) { mtuDeferred?.await() } ?: 23
+            Log.d(tag, "negotiated MTU = $mtu")
+        }
+        mtuDeferred = null
+
         // 服务发现
         val discovered = discoverServices()
         if (!discovered) {
@@ -262,23 +267,17 @@ class RealBleManager(
             return false
         }
 
-        // 绑定 RX / TX（按 NUS UUID 查找，与扫描时是否过滤 UUID 无关）
         val service = gatt?.getService(BleUartConfig.SERVICE_UUID)
         rxChar = service?.getCharacteristic(BleUartConfig.RX_CHARACTERISTIC_UUID)
         txChar = service?.getCharacteristic(BleUartConfig.TX_CHARACTERISTIC_UUID)
 
         if (rxChar == null || txChar == null) {
-            Log.e(
-                tag,
-                "NUS Service/Characteristic not found on $address. " +
-                        "检查 BleUartConfig.SERVICE_UUID / RX / TX 是否与固件一致"
-            )
+            Log.e(tag, "NUS Service/Char not found on $address")
             _connectionState.value = BleConnectionState.Disconnected
             closeGatt()
             return false
         }
 
-        // 打开 TX 的 Notify
         val notifyOk = enableNotification(txChar!!)
         if (!notifyOk) {
             Log.e(tag, "enable TX notification failed")
@@ -290,17 +289,24 @@ class RealBleManager(
         _connectionState.value = BleConnectionState.Connected(
             runCatching { device.name }.getOrNull() ?: address
         )
+
+        // ⚠️ 启动心跳保活
+        startKeepAlive()
+
         return true
     }
 
     override suspend fun disconnect() {
+        stopKeepAlive()
         _connectionState.value = BleConnectionState.NotPaired
         closeGatt()
     }
 
     private fun closeGatt() {
-        runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
+        keepAliveJob?.cancel()
+        keepAliveJob = null
+
+        val g = gatt
         gatt = null
         rxChar = null
         txChar = null
@@ -309,14 +315,26 @@ class RealBleManager(
         discoverDeferred = null
         writeDeferred = null
         notifyDeferred = null
+        mtuDeferred = null
         commandDeferred = null
+
+        if (g == null) return
+
+        closingGatt = true
+        runCatching { g.disconnect() }
+
+        // ⚠️ 延迟 close，给栈清理时间
+        mainHandler.postDelayed({
+            runCatching { g.close() }
+            closingGatt = false
+        }, BleUartConfig.CLOSE_DELAY_MS)
     }
 
     private suspend fun discoverServices(): Boolean {
         val g = gatt ?: return false
         discoverDeferred = CompletableDeferred()
         if (!g.discoverServices()) return false
-        return withTimeoutOrNull(BleUartConfig.DISCOVER_TIMEOUT_MS) {
+        return withTimeoutOrNull(BleUartConfig.DISCOVER_TIMEOUT_MS.milliseconds) {
             discoverDeferred?.await() ?: false
         } ?: false
     }
@@ -331,7 +349,7 @@ class RealBleManager(
         val ok = writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
         if (!ok) return false
 
-        return withTimeoutOrNull(BleUartConfig.NOTIFY_TIMEOUT_MS) {
+        return withTimeoutOrNull(BleUartConfig.NOTIFY_TIMEOUT_MS.milliseconds) {
             notifyDeferred?.await() ?: false
         } ?: false
     }
@@ -352,6 +370,30 @@ class RealBleManager(
     }
 
     // ============================================================
+    // 心跳保活
+    // ============================================================
+    private fun startKeepAlive() {
+        stopKeepAlive()
+        keepAliveJob = scope.launch {
+            while (true) {
+                delay(BleUartConfig.KEEP_ALIVE_INTERVAL_MS)
+                if (_connectionState.value !is BleConnectionState.Connected) break
+                val g = gatt ?: break
+                runCatching {
+                    g.readRemoteRssi()
+                }.onFailure {
+                    Log.w(tag, "keepAlive readRemoteRssi failed: ${it.message}")
+                }
+            }
+        }
+    }
+
+    private fun stopKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
+    }
+
+    // ============================================================
     // GATT 回调
     // ============================================================
     private val gattCallback = object : BluetoothGattCallback() {
@@ -361,21 +403,47 @@ class RealBleManager(
             status: Int,
             newState: Int
         ) {
-            if (status == BluetoothGatt.GATT_SUCCESS &&
-                newState == BluetoothProfile.STATE_CONNECTED
+            Log.d(tag, "onConnectionStateChange status=$status newState=$newState")
+
+            if (newState == BluetoothProfile.STATE_CONNECTED &&
+                status == BluetoothGatt.GATT_SUCCESS
             ) {
                 connectDeferred?.complete(true)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 connectDeferred?.complete(false)
+
                 if (_connectionState.value is BleConnectionState.Connected) {
                     _connectionState.value = BleConnectionState.Disconnected
                 }
-                closeGatt()
+
+                stopKeepAlive()
+
+                // ⚠️ 延迟 close，让栈有时间清理
+                closingGatt = true
+                mainHandler.postDelayed({
+                    runCatching { gatt.close() }
+                    if (this@RealBleManager.gatt === gatt) {
+                        this@RealBleManager.gatt = null
+                        rxChar = null
+                        txChar = null
+                    }
+                    closingGatt = false
+                }, BleUartConfig.CLOSE_DELAY_MS)
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            Log.d(tag, "onServicesDiscovered status=$status")
             discoverDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            Log.d(tag, "onMtuChanged mtu=$mtu status=$status")
+            mtuDeferred?.complete(mtu)
+        }
+
+        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+            Log.d(tag, "onReadRemoteRssi rssi=$rssi status=$status")
         }
 
         override fun onDescriptorWrite(
@@ -398,7 +466,6 @@ class RealBleManager(
             }
         }
 
-        // API 33+ 新签名
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
@@ -409,7 +476,6 @@ class RealBleManager(
             }
         }
 
-        // 兼容旧版本
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
@@ -470,9 +536,8 @@ class RealBleManager(
     private suspend fun sendFrameAndAwaitResponse(
         frame: ByteArray
     ): BleUartProtocol.Parsed? {
-        if (_connectionState.value !is BleConnectionState.Connected) {
-            return null
-        }
+        if (_connectionState.value !is BleConnectionState.Connected) return null
+
         receiveBuffer.reset()
         commandDeferred = CompletableDeferred()
 
@@ -482,14 +547,13 @@ class RealBleManager(
             return null
         }
 
-        val result = withTimeoutOrNull(BleUartConfig.COMMAND_TIMEOUT_MS) {
+        val result = withTimeoutOrNull(BleUartConfig.COMMAND_TIMEOUT_MS.milliseconds) {
             commandDeferred?.await()
         }
         commandDeferred = null
         return result
     }
 
-    /** 分包写入（按 chunkSize 切分） */
     private suspend fun writeFrame(frame: ByteArray): Boolean {
         val rx = rxChar ?: return false
         var offset = 0
@@ -529,7 +593,7 @@ class RealBleManager(
             return false
         }
 
-        val ok = withTimeoutOrNull(BleUartConfig.WRITE_TIMEOUT_MS) {
+        val ok = withTimeoutOrNull(BleUartConfig.WRITE_TIMEOUT_MS.milliseconds) {
             writeDeferred?.await() ?: false
         } ?: false
         writeDeferred = null
