@@ -22,7 +22,10 @@ data class HomeUiState(
 ) {
     val isConnected: Boolean get() = connectionState is BleConnectionState.Connected
     val canOperate: Boolean get() = isConnected && !isLoading
-    val buttonText: String get() = if (lockState == LockState.UNLOCKED) "上锁" else "解锁"
+
+    // ⚠️ 上锁功能已屏蔽：按钮文案恒为「解锁」
+    //val buttonText: String get() = if (lockState == LockState.UNLOCKED) "上锁" else "解锁"
+    val buttonText: String get() = "解锁"
 }
 
 class HomeViewModel(
@@ -84,13 +87,22 @@ class HomeViewModel(
 
         viewModelScope.launch {
             _isLoading.value = true
-            val unlocking = current.lockState != LockState.UNLOCKED
-            val result = if (unlocking) repository.unlock() else repository.lock()
+
+            // ⚠️ 上锁功能已屏蔽：无论当前状态如何，只发送解锁指令
+            val result = repository.unlock()
+
+            // 原逻辑（保留备查）：
+            // val unlocking = current.lockState != LockState.UNLOCKED
+            // val result = if (unlocking) repository.unlock() else repository.lock()
+
             _isLoading.value = false
 
             when (result) {
                 is CommandResult.Success ->
-                    _messages.send(if (unlocking) "解锁成功" else "上锁成功")
+                    // ⚠️ 提示文案恒为「解锁成功」
+                    _messages.send("解锁成功")
+                    // 原逻辑（保留备查）：
+                    // _messages.send(if (unlocking) "解锁成功" else "上锁成功")
                 is CommandResult.Failure ->
                     _messages.send(result.message)
             }
